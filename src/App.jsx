@@ -433,7 +433,7 @@ function App() {
             >
               <WhatnotIcon />
             </a>
-            <a href="mailto:CONTACT_EMAIL">CONTACT_EMAIL</a>
+            <a href="mailto:james@victorylanecards.com">james@victorylanecards.com</a>
           </div>
         </div>
       </footer>
