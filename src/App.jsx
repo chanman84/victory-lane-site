@@ -235,12 +235,13 @@ function App() {
 
               <div className="show-schedule-card">
                 <span className="show-schedule-card__label">Next Show</span>
-                <strong>Saturday, March 28, 2026 at 7:00 PM ET</strong>
+                <strong>Live Today at 2:30 PM ET</strong>
                 <p>
-                  The first Victory Lane Cards live show is tentatively set for Saturday, March 28, 2026 at 7:00 PM
-                  ET. It is shaping up to be our first-ever show and a big Opening Weekend launch for baseball season,
-                  with the energy of MLB&apos;s opening stretch carrying straight into the room.
+                  🏁 Huge thank you to everyone who joined us last night — the support from this community means
+                  everything.
                 </p>
+                <p>We&apos;re back live again today at 2:30 PM and looking forward to seeing you all there.</p>
+                <p>Let&apos;s keep building this together.</p>
                 <a className="button button--primary button--block" href="https://www.whatnot.com/user/chanman84">
                   Watch the Saturday Show
                 </a>
