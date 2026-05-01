@@ -1,4 +1,5 @@
-﻿import "./App.css";
+import { useEffect, useState } from "react";
+import "./App.css";
 import indyHero from "./assets/indy.jpg";
 import vlcLogo from "./assets/VLCLogo.jpg";
 import ownerPhoto from "./assets/Owner.jpg";
@@ -18,12 +19,30 @@ const navLinks = [
   { label: "Contact", href: "#contact" },
 ];
 
+const whatnotProfileUrl = "https://www.whatnot.com/user/chanman84";
+const facebookPageUrl = "https://www.facebook.com/profile.php?id=61587744621760";
+const instagramUrl = "https://www.instagram.com/victorylane_cards/?hl=en";
+const buyerReferralUrl = "https://whatnot.com/invite/chanman84";
+const sellerReferralUrl = "https://whatnot.com/invite/seller/chanman84";
+
+const defaultShowSettings = {
+  label: "Next Show",
+  headline: "Live Today at 2:30 PM ET",
+  messages: [
+    "Huge thank you to everyone who joined us last night — the support from this community means everything.",
+    "We're back live again today at 2:30 PM and looking forward to seeing you all there.",
+    "Let's keep building this together.",
+  ],
+  buttonLabel: "Watch the Saturday Show",
+  buttonHref: whatnotProfileUrl,
+};
+
 const referralCards = [
   {
     title: "Watch on Whatnot",
     description:
       "Get into the room before the best cards move. Saturday nights bring fast-paced singles, competitive bidding, and a live experience built for collectors who don't want to miss out.",
-    href: "https://www.whatnot.com/user/chanman84",
+    href: whatnotProfileUrl,
     button: "Enter the Live Room",
     featured: true,
   },
@@ -31,14 +50,14 @@ const referralCards = [
     title: "Buyer Referral Link",
     description:
       "New to Whatnot? Start here. Get into the hobby with a buyer referral that makes it easier to jump in, grab your first cards, and experience the energy of a live show.",
-    href: "https://whatnot.com/invite/chanman84",
+    href: buyerReferralUrl,
     button: "Start as a Buyer",
   },
   {
     title: "Seller Referral Link",
     description:
       "Thinking about selling? Use this referral to get started on Whatnot with a setup built around consistency, transparency, and a real collector audience.",
-    href: "https://whatnot.com/invite/seller/chanman84",
+    href: sellerReferralUrl,
     button: "Start Selling on Whatnot",
   },
 ];
@@ -110,6 +129,52 @@ const reasons = [
     body: "Focused on relationships, not one-time transactions.",
   },
 ];
+
+function buildShowForm(settings) {
+  const messages = Array.isArray(settings.messages) ? settings.messages : [];
+  return {
+    label: settings.label ?? defaultShowSettings.label,
+    headline: settings.headline ?? defaultShowSettings.headline,
+    messageOne: messages[0] ?? "",
+    messageTwo: messages[1] ?? "",
+    messageThree: messages[2] ?? "",
+    buttonLabel: settings.buttonLabel ?? defaultShowSettings.buttonLabel,
+    buttonHref: settings.buttonHref ?? defaultShowSettings.buttonHref,
+  };
+}
+
+function normalizeShowSettings(rawSettings) {
+  return {
+    label: rawSettings?.label?.trim() || defaultShowSettings.label,
+    headline: rawSettings?.headline?.trim() || defaultShowSettings.headline,
+    messages: Array.isArray(rawSettings?.messages) && rawSettings.messages.length > 0
+      ? rawSettings.messages.filter(Boolean).slice(0, 3)
+      : defaultShowSettings.messages,
+    buttonLabel: rawSettings?.buttonLabel?.trim() || defaultShowSettings.buttonLabel,
+    buttonHref: rawSettings?.buttonHref?.trim() || defaultShowSettings.buttonHref,
+  };
+}
+
+function buildShowPayload(form) {
+  return {
+    label: form.label.trim(),
+    headline: form.headline.trim(),
+    messages: [form.messageOne, form.messageTwo, form.messageThree]
+      .map((message) => message.trim())
+      .filter(Boolean),
+    buttonLabel: form.buttonLabel.trim(),
+    buttonHref: form.buttonHref.trim(),
+  };
+}
+
+async function readJson(response) {
+  try {
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
 function FacebookIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -144,6 +209,442 @@ function WhatnotIcon() {
 }
 
 function App() {
+  const [showSettings, setShowSettings] = useState(defaultShowSettings);
+  const [showForm, setShowForm] = useState(buildShowForm(defaultShowSettings));
+  const [showApiOnline, setShowApiOnline] = useState(true);
+  const [adminOpen, setAdminOpen] = useState(false);
+  const [sessionLoading, setSessionLoading] = useState(true);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [authError, setAuthError] = useState("");
+  const [loginPending, setLoginPending] = useState(false);
+  const [loginForm, setLoginForm] = useState({ username: "", password: "" });
+  const [showSaveState, setShowSaveState] = useState({ type: "idle", message: "" });
+  const [showSaving, setShowSaving] = useState(false);
+  const [usersLoading, setUsersLoading] = useState(false);
+  const [userList, setUserList] = useState([]);
+  const [userForm, setUserForm] = useState({
+    username: "",
+    displayName: "",
+    password: "",
+    role: "editor",
+  });
+  const [userFormState, setUserFormState] = useState({ type: "idle", message: "" });
+  const [userSaving, setUserSaving] = useState(false);
+  const [passwordForm, setPasswordForm] = useState({
+    currentPassword: "",
+    newPassword: "",
+    confirmPassword: "",
+  });
+  const [passwordSaving, setPasswordSaving] = useState(false);
+  const [passwordState, setPasswordState] = useState({ type: "idle", message: "" });
+  const [resetPasswordForms, setResetPasswordForms] = useState({});
+  const [resetPasswordStates, setResetPasswordStates] = useState({});
+  const [resettingUserId, setResettingUserId] = useState("");
+
+  useEffect(() => {
+    void loadShowSettings();
+    void loadSession();
+  }, []);
+
+  async function loadShowSettings() {
+    try {
+      const response = await fetch("/api/show-settings");
+      const data = await readJson(response);
+      setShowApiOnline(true);
+
+      if (!response.ok) {
+        throw new Error(data?.error || "Unable to load live show settings.");
+      }
+
+      const normalizedSettings = normalizeShowSettings(data?.showSettings);
+      setShowSettings(normalizedSettings);
+      setShowForm(buildShowForm(normalizedSettings));
+    } catch (error) {
+      if (error instanceof TypeError) {
+        setShowApiOnline(false);
+      }
+    }
+  }
+
+  async function loadSession() {
+    try {
+      const response = await fetch("/api/auth/session", {
+        credentials: "include",
+      });
+      setShowApiOnline(true);
+
+      if (response.status === 401) {
+        setCurrentUser(null);
+        setAuthError("");
+        return;
+      }
+
+      const data = await readJson(response);
+
+      if (!response.ok) {
+        throw new Error(data?.error || "Unable to check admin session.");
+      }
+
+      setCurrentUser(data.user);
+      setAuthError("");
+
+      if (data.user?.role === "admin") {
+        await loadUsers();
+      }
+    } catch (error) {
+      setCurrentUser(null);
+      setAuthError("The admin server is offline right now. Start `npm run server` to use the admin tools.");
+      if (error instanceof TypeError) {
+        setShowApiOnline(false);
+      }
+    } finally {
+      setSessionLoading(false);
+    }
+  }
+
+  async function loadUsers() {
+    setUsersLoading(true);
+
+    try {
+      const response = await fetch("/api/users", {
+        credentials: "include",
+      });
+      const data = await readJson(response);
+      setShowApiOnline(true);
+
+      if (!response.ok) {
+        throw new Error(data?.error || "Unable to load users.");
+      }
+
+      setUserList(data.users ?? []);
+    } catch (error) {
+      setUserFormState({
+        type: "error",
+        message: error.message || "We couldn't load the saved admin users.",
+      });
+      if (error instanceof TypeError) {
+        setShowApiOnline(false);
+      }
+    } finally {
+      setUsersLoading(false);
+    }
+  }
+
+  function openAdminPanel() {
+    setAdminOpen(true);
+    setAuthError("");
+  }
+
+  function closeAdminPanel() {
+    setAdminOpen(false);
+    setShowSaveState({ type: "idle", message: "" });
+    setUserFormState({ type: "idle", message: "" });
+    setPasswordState({ type: "idle", message: "" });
+    setPasswordForm({
+      currentPassword: "",
+      newPassword: "",
+      confirmPassword: "",
+    });
+    setResetPasswordForms({});
+    setResetPasswordStates({});
+  }
+
+  async function handleLoginSubmit(event) {
+    event.preventDefault();
+    setLoginPending(true);
+    setAuthError("");
+
+    try {
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(loginForm),
+      });
+      const data = await readJson(response);
+      setShowApiOnline(true);
+
+      if (!response.ok) {
+        throw new Error(data?.error || "Unable to sign in.");
+      }
+
+      setCurrentUser(data.user);
+      setLoginForm({ username: "", password: "" });
+      setShowApiOnline(true);
+
+      if (data.user?.role === "admin") {
+        await loadUsers();
+      }
+    } catch (error) {
+      setAuthError(error.message || "We couldn't sign you in.");
+      if (error instanceof TypeError) {
+        setShowApiOnline(false);
+      }
+    } finally {
+      setSessionLoading(false);
+      setLoginPending(false);
+    }
+  }
+
+  async function handleLogout() {
+    try {
+      await fetch("/api/auth/logout", {
+        method: "POST",
+        credentials: "include",
+      });
+    } finally {
+      setCurrentUser(null);
+      setUserList([]);
+      setAuthError("");
+      setUserFormState({ type: "idle", message: "" });
+      setPasswordState({ type: "idle", message: "" });
+      setPasswordForm({
+        currentPassword: "",
+        newPassword: "",
+        confirmPassword: "",
+      });
+      setResetPasswordForms({});
+      setResetPasswordStates({});
+    }
+  }
+
+  async function handleShowSave(event) {
+    event.preventDefault();
+
+    const payload = buildShowPayload(showForm);
+    if (!payload.headline) {
+      setShowSaveState({
+        type: "error",
+        message: "The show headline can't be empty.",
+      });
+      return;
+    }
+
+    if (payload.messages.length === 0) {
+      setShowSaveState({
+        type: "error",
+        message: "Add at least one show message so the card has something to say.",
+      });
+      return;
+    }
+
+    setShowSaving(true);
+    setShowSaveState({ type: "idle", message: "" });
+
+    try {
+      const response = await fetch("/api/show-settings", {
+        method: "PUT",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+      const data = await readJson(response);
+      setShowApiOnline(true);
+
+      if (!response.ok) {
+        throw new Error(data?.error || "Unable to save show settings.");
+      }
+
+      const normalizedSettings = normalizeShowSettings(data?.showSettings);
+      setShowSettings(normalizedSettings);
+      setShowForm(buildShowForm(normalizedSettings));
+      setShowApiOnline(true);
+      setShowSaveState({
+        type: "success",
+        message: "The homepage show notification is live.",
+      });
+    } catch (error) {
+      setShowSaveState({
+        type: "error",
+        message: error.message || "We couldn't save those show settings.",
+      });
+      if (error instanceof TypeError) {
+        setShowApiOnline(false);
+      }
+    } finally {
+      setShowSaving(false);
+    }
+  }
+
+  async function handleCreateUser(event) {
+    event.preventDefault();
+    setUserSaving(true);
+    setUserFormState({ type: "idle", message: "" });
+
+    try {
+      const response = await fetch("/api/users", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(userForm),
+      });
+      const data = await readJson(response);
+      setShowApiOnline(true);
+
+      if (!response.ok) {
+        throw new Error(data?.error || "Unable to create that user.");
+      }
+
+      setUserForm({
+        username: "",
+        displayName: "",
+        password: "",
+        role: "editor",
+      });
+      setUserFormState({
+        type: "success",
+        message: "New admin access has been created.",
+      });
+      setShowApiOnline(true);
+      await loadUsers();
+    } catch (error) {
+      setUserFormState({
+        type: "error",
+        message: error.message || "We couldn't create that user.",
+      });
+      if (error instanceof TypeError) {
+        setShowApiOnline(false);
+      }
+    } finally {
+      setUserSaving(false);
+    }
+  }
+
+  async function handlePasswordChange(event) {
+    event.preventDefault();
+
+    if (passwordForm.newPassword.length < 8) {
+      setPasswordState({
+        type: "error",
+        message: "Use at least 8 characters for the new password.",
+      });
+      return;
+    }
+
+    if (passwordForm.newPassword !== passwordForm.confirmPassword) {
+      setPasswordState({
+        type: "error",
+        message: "The new password and confirmation did not match.",
+      });
+      return;
+    }
+
+    setPasswordSaving(true);
+    setPasswordState({ type: "idle", message: "" });
+
+    try {
+      const response = await fetch("/api/auth/password", {
+        method: "PUT",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          currentPassword: passwordForm.currentPassword,
+          newPassword: passwordForm.newPassword,
+        }),
+      });
+      const data = await readJson(response);
+      setShowApiOnline(true);
+
+      if (!response.ok) {
+        throw new Error(data?.error || "Unable to update your password.");
+      }
+
+      setPasswordForm({
+        currentPassword: "",
+        newPassword: "",
+        confirmPassword: "",
+      });
+      setPasswordState({
+        type: "success",
+        message: "Your password has been updated.",
+      });
+    } catch (error) {
+      setPasswordState({
+        type: "error",
+        message: error.message || "We couldn't update your password.",
+      });
+      if (error instanceof TypeError) {
+        setShowApiOnline(false);
+      }
+    } finally {
+      setPasswordSaving(false);
+    }
+  }
+
+  async function handleUserPasswordReset(event, userId) {
+    event.preventDefault();
+
+    const nextPassword = resetPasswordForms[userId] ?? "";
+    if (nextPassword.length < 8) {
+      setResetPasswordStates((current) => ({
+        ...current,
+        [userId]: {
+          type: "error",
+          message: "Use at least 8 characters for the replacement password.",
+        },
+      }));
+      return;
+    }
+
+    setResettingUserId(userId);
+    setResetPasswordStates((current) => ({
+      ...current,
+      [userId]: { type: "idle", message: "" },
+    }));
+
+    try {
+      const response = await fetch(`/api/users/${userId}/password`, {
+        method: "PUT",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          newPassword: nextPassword,
+        }),
+      });
+      const data = await readJson(response);
+      setShowApiOnline(true);
+
+      if (!response.ok) {
+        throw new Error(data?.error || "Unable to update that user's password.");
+      }
+
+      setResetPasswordForms((current) => ({
+        ...current,
+        [userId]: "",
+      }));
+      setResetPasswordStates((current) => ({
+        ...current,
+        [userId]: {
+          type: "success",
+          message: data?.message || "Password updated.",
+        },
+      }));
+    } catch (error) {
+      setResetPasswordStates((current) => ({
+        ...current,
+        [userId]: {
+          type: "error",
+          message: error.message || "We couldn't update that password.",
+        },
+      }));
+      if (error instanceof TypeError) {
+        setShowApiOnline(false);
+      }
+    } finally {
+      setResettingUserId("");
+    }
+  }
+
   return (
     <div className="site-shell" id="home">
       <header className="topbar">
@@ -168,9 +669,18 @@ function App() {
             ))}
           </nav>
 
-          <a className="button button--primary topbar-cta" href="https://www.whatnot.com/user/chanman84">
-            Watch on Whatnot
-          </a>
+          <div className="topbar-actions">
+            <button
+              type="button"
+              className="button button--secondary topbar-admin"
+              onClick={openAdminPanel}
+            >
+              {currentUser ? "Admin Dashboard" : "Admin Login"}
+            </button>
+            <a className="button button--primary topbar-cta" href={whatnotProfileUrl}>
+              Watch on Whatnot
+            </a>
+          </div>
         </div>
       </header>
 
@@ -198,10 +708,10 @@ function App() {
                   reliability to live sports card sales across baseball, football, hockey, and vintage.
                 </p>
                 <div className="cover-frame__actions">
-                  <a className="button button--primary" href="https://www.whatnot.com/user/chanman84">
+                  <a className="button button--primary" href={whatnotProfileUrl}>
                     Join Saturday Show
                   </a>
-                  <a className="button button--secondary" href="https://www.facebook.com/profile.php?id=61587744621760">
+                  <a className="button button--secondary" href={facebookPageUrl}>
                     Visit Facebook Page
                   </a>
                 </div>
@@ -234,16 +744,13 @@ function App() {
               </div>
 
               <div className="show-schedule-card">
-                <span className="show-schedule-card__label">Next Show</span>
-                <strong>Live Today at 2:30 PM ET</strong>
-                <p>
-                  🏁 Huge thank you to everyone who joined us last night — the support from this community means
-                  everything.
-                </p>
-                <p>We&apos;re back live again today at 2:30 PM and looking forward to seeing you all there.</p>
-                <p>Let&apos;s keep building this together.</p>
-                <a className="button button--primary button--block" href="https://www.whatnot.com/user/chanman84">
-                  Watch the Saturday Show
+                <span className="show-schedule-card__label">{showSettings.label}</span>
+                <strong>{showSettings.headline}</strong>
+                {showSettings.messages.map((message, index) => (
+                  <p key={`${message}-${index}`}>{message}</p>
+                ))}
+                <a className="button button--primary button--block" href={showSettings.buttonHref}>
+                  {showSettings.buttonLabel}
                 </a>
               </div>
             </div>
@@ -255,9 +762,7 @@ function App() {
             <div className="section-heading">
               <p className="eyebrow">Action Center</p>
               <h2>Referral links and show traffic, all in one place.</h2>
-              <p>
-                Everything you need to join, buy, or start selling — right here.
-              </p>
+              <p>Everything you need to join, buy, or start selling — right here.</p>
             </div>
 
             <div className="referral-grid">
@@ -305,7 +810,7 @@ function App() {
                               ? { backgroundImage: `url(${hockeyBg})` }
                               : category.theme === "vintage"
                                 ? { backgroundImage: `url(${vintageBg})` }
-                          : undefined
+                                : undefined
                     }
                   />
                   <div className="category-card__accent" />
@@ -411,7 +916,7 @@ function App() {
 
           <div className="footer__links">
             <a
-              href="https://www.facebook.com/profile.php?id=61587744621760"
+              href={facebookPageUrl}
               className="footer__icon-link"
               aria-label="Facebook Page"
               title="Facebook Page"
@@ -419,7 +924,7 @@ function App() {
               <FacebookIcon />
             </a>
             <a
-              href="https://www.instagram.com/victorylane_cards/?hl=en"
+              href={instagramUrl}
               className="footer__icon-link"
               aria-label="Instagram"
               title="Instagram"
@@ -427,7 +932,7 @@ function App() {
               <InstagramIcon />
             </a>
             <a
-              href="https://www.whatnot.com/user/chanman84"
+              href={whatnotProfileUrl}
               className="footer__icon-link"
               aria-label="Whatnot Show"
               title="Whatnot Show"
@@ -438,9 +943,391 @@ function App() {
           </div>
         </div>
       </footer>
+
+      <div className={`admin-shell${adminOpen ? " is-open" : ""}`} aria-hidden={!adminOpen}>
+        <button
+          type="button"
+          className="admin-shell__backdrop"
+          onClick={closeAdminPanel}
+          aria-label="Close admin panel"
+        />
+        <section
+          className="admin-panel"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="admin-panel-title"
+        >
+          <div className="admin-panel__header">
+            <div>
+              <p className="eyebrow">Admin Access</p>
+              <h2 id="admin-panel-title">
+                {currentUser ? "Show Control Center" : "Sign in to manage show updates"}
+              </h2>
+            </div>
+            <button type="button" className="admin-close" onClick={closeAdminPanel}>
+              Close
+            </button>
+          </div>
+
+          {!showApiOnline && (
+            <div className="admin-alert admin-alert--warning">
+              The admin server is offline. Run <code>npm run server</code> in this project folder, then refresh.
+            </div>
+          )}
+
+          {sessionLoading ? (
+            <p className="admin-empty">Checking your saved admin session…</p>
+          ) : currentUser ? (
+            <div className="admin-panel__grid">
+              <section className="admin-card">
+                <div className="admin-card__header">
+                  <div>
+                    <h3>Logged in and ready</h3>
+                    <p>
+                      You can update the live show card here, and the homepage will use the latest saved version.
+                    </p>
+                  </div>
+                  <button type="button" className="button button--secondary" onClick={handleLogout}>
+                    Log Out
+                  </button>
+                </div>
+
+                <div className="admin-panel__meta">
+                  <span className="admin-pill">{currentUser.displayName}</span>
+                  <span className="admin-pill admin-pill--muted">{currentUser.role}</span>
+                </div>
+
+                <form className="admin-form" onSubmit={handleShowSave}>
+                  <div className="admin-form__row">
+                    <label className="admin-field">
+                      <span>Status Label</span>
+                      <input
+                        type="text"
+                        value={showForm.label}
+                        onChange={(event) => setShowForm((current) => ({
+                          ...current,
+                          label: event.target.value,
+                        }))}
+                      />
+                    </label>
+                    <label className="admin-field">
+                      <span>Headline</span>
+                      <input
+                        type="text"
+                        value={showForm.headline}
+                        onChange={(event) => setShowForm((current) => ({
+                          ...current,
+                          headline: event.target.value,
+                        }))}
+                      />
+                    </label>
+                  </div>
+
+                  <label className="admin-field">
+                    <span>Message One</span>
+                    <textarea
+                      value={showForm.messageOne}
+                      onChange={(event) => setShowForm((current) => ({
+                        ...current,
+                        messageOne: event.target.value,
+                      }))}
+                    />
+                  </label>
+
+                  <label className="admin-field">
+                    <span>Message Two</span>
+                    <textarea
+                      value={showForm.messageTwo}
+                      onChange={(event) => setShowForm((current) => ({
+                        ...current,
+                        messageTwo: event.target.value,
+                      }))}
+                    />
+                  </label>
+
+                  <label className="admin-field">
+                    <span>Message Three</span>
+                    <textarea
+                      value={showForm.messageThree}
+                      onChange={(event) => setShowForm((current) => ({
+                        ...current,
+                        messageThree: event.target.value,
+                      }))}
+                    />
+                  </label>
+
+                  <div className="admin-form__row">
+                    <label className="admin-field">
+                      <span>Button Label</span>
+                      <input
+                        type="text"
+                        value={showForm.buttonLabel}
+                        onChange={(event) => setShowForm((current) => ({
+                          ...current,
+                          buttonLabel: event.target.value,
+                        }))}
+                      />
+                    </label>
+                    <label className="admin-field">
+                      <span>Button URL</span>
+                      <input
+                        type="url"
+                        value={showForm.buttonHref}
+                        onChange={(event) => setShowForm((current) => ({
+                          ...current,
+                          buttonHref: event.target.value,
+                        }))}
+                      />
+                    </label>
+                  </div>
+
+                  <div className="admin-form__actions">
+                    <p className={`admin-status ${showSaveState.type ? `admin-status--${showSaveState.type}` : ""}`}>
+                      {showSaveState.message || "Save here anytime you want to update the homepage show card."}
+                    </p>
+                    <button type="submit" className="button button--primary" disabled={showSaving}>
+                      {showSaving ? "Saving..." : "Save Show Update"}
+                    </button>
+                  </div>
+                </form>
+              </section>
+
+              <section className="admin-card">
+                <div className="admin-card__header">
+                  <div>
+                    <h3>Change your password</h3>
+                    <p>Use this any time you want to rotate your own login without creating a replacement user.</p>
+                  </div>
+                </div>
+
+                <form className="admin-form" onSubmit={handlePasswordChange}>
+                  <label className="admin-field">
+                    <span>Current Password</span>
+                    <input
+                      type="password"
+                      autoComplete="current-password"
+                      value={passwordForm.currentPassword}
+                      onChange={(event) => setPasswordForm((current) => ({
+                        ...current,
+                        currentPassword: event.target.value,
+                      }))}
+                    />
+                  </label>
+
+                  <div className="admin-form__row">
+                    <label className="admin-field">
+                      <span>New Password</span>
+                      <input
+                        type="password"
+                        autoComplete="new-password"
+                        value={passwordForm.newPassword}
+                        onChange={(event) => setPasswordForm((current) => ({
+                          ...current,
+                          newPassword: event.target.value,
+                        }))}
+                      />
+                    </label>
+                    <label className="admin-field">
+                      <span>Confirm New Password</span>
+                      <input
+                        type="password"
+                        autoComplete="new-password"
+                        value={passwordForm.confirmPassword}
+                        onChange={(event) => setPasswordForm((current) => ({
+                          ...current,
+                          confirmPassword: event.target.value,
+                        }))}
+                      />
+                    </label>
+                  </div>
+
+                  <div className="admin-form__actions">
+                    <p className={`admin-status ${passwordState.type ? `admin-status--${passwordState.type}` : ""}`}>
+                      {passwordState.message || "Pick a new password with at least 8 characters."}
+                    </p>
+                    <button type="submit" className="button button--primary" disabled={passwordSaving}>
+                      {passwordSaving ? "Updating..." : "Update My Password"}
+                    </button>
+                  </div>
+                </form>
+              </section>
+
+              {currentUser.role === "admin" && (
+                <section className="admin-card">
+                  <div className="admin-card__header">
+                    <div>
+                      <h3>Admin users</h3>
+                      <p>Add more people here when you want trusted teammates to log in and update the show card.</p>
+                    </div>
+                  </div>
+
+                  <form className="admin-form" onSubmit={handleCreateUser}>
+                    <div className="admin-form__row">
+                      <label className="admin-field">
+                        <span>Username</span>
+                        <input
+                          type="text"
+                          value={userForm.username}
+                          onChange={(event) => setUserForm((current) => ({
+                            ...current,
+                            username: event.target.value,
+                          }))}
+                        />
+                      </label>
+                      <label className="admin-field">
+                        <span>Display Name</span>
+                        <input
+                          type="text"
+                          value={userForm.displayName}
+                          onChange={(event) => setUserForm((current) => ({
+                            ...current,
+                            displayName: event.target.value,
+                          }))}
+                        />
+                      </label>
+                    </div>
+
+                    <div className="admin-form__row">
+                      <label className="admin-field">
+                        <span>Password</span>
+                        <input
+                          type="password"
+                          value={userForm.password}
+                          onChange={(event) => setUserForm((current) => ({
+                            ...current,
+                            password: event.target.value,
+                          }))}
+                        />
+                      </label>
+                      <label className="admin-field">
+                        <span>Role</span>
+                        <select
+                          value={userForm.role}
+                          onChange={(event) => setUserForm((current) => ({
+                            ...current,
+                            role: event.target.value,
+                          }))}
+                        >
+                          <option value="editor">Editor</option>
+                          <option value="admin">Admin</option>
+                        </select>
+                      </label>
+                    </div>
+
+                    <div className="admin-form__actions">
+                      <p className={`admin-status ${userFormState.type ? `admin-status--${userFormState.type}` : ""}`}>
+                        {userFormState.message || "Editors can update show notifications. Admins can add more users."}
+                      </p>
+                      <button type="submit" className="button button--primary" disabled={userSaving}>
+                        {userSaving ? "Creating..." : "Create User"}
+                      </button>
+                    </div>
+                  </form>
+
+                  {usersLoading ? (
+                    <p className="admin-empty">Loading saved users…</p>
+                  ) : (
+                    <ul className="admin-user-list">
+                      {userList.map((user) => (
+                        <li key={user.id} className="admin-user-item">
+                          <div className="admin-user-item__header">
+                            <div>
+                              <strong>{user.displayName}</strong>
+                              <span className="admin-user-handle">@{user.username}</span>
+                            </div>
+                            <span className="admin-pill admin-pill--muted">{user.role}</span>
+                          </div>
+
+                          <form className="admin-inline-form" onSubmit={(event) => handleUserPasswordReset(event, user.id)}>
+                            <label className="admin-field">
+                              <span>Set a new password</span>
+                              <input
+                                type="password"
+                                autoComplete="new-password"
+                                value={resetPasswordForms[user.id] ?? ""}
+                                onChange={(event) => setResetPasswordForms((current) => ({
+                                  ...current,
+                                  [user.id]: event.target.value,
+                                }))}
+                              />
+                            </label>
+                            <button
+                              type="submit"
+                              className="button button--secondary"
+                              disabled={resettingUserId === user.id}
+                            >
+                              {resettingUserId === user.id ? "Saving..." : "Update Password"}
+                            </button>
+                          </form>
+
+                          {resetPasswordStates[user.id]?.message && (
+                            <p className={`admin-inline-status admin-inline-status--${resetPasswordStates[user.id].type}`}>
+                              {resetPasswordStates[user.id].message}
+                            </p>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </section>
+              )}
+            </div>
+          ) : (
+            <section className="admin-card">
+              <div className="admin-card__header">
+                <div>
+                  <h3>Login link, real backend, saved users</h3>
+                  <p>
+                    This admin panel talks to the backend server and stores user accounts plus show notifications, so
+                    the homepage can update without touching the source code.
+                  </p>
+                </div>
+              </div>
+
+              {authError && <div className="admin-alert admin-alert--error">{authError}</div>}
+
+              <form className="admin-form" onSubmit={handleLoginSubmit}>
+                <label className="admin-field">
+                  <span>Username</span>
+                  <input
+                    type="text"
+                    autoComplete="username"
+                    value={loginForm.username}
+                    onChange={(event) => setLoginForm((current) => ({
+                      ...current,
+                      username: event.target.value,
+                    }))}
+                  />
+                </label>
+
+                <label className="admin-field">
+                  <span>Password</span>
+                  <input
+                    type="password"
+                    autoComplete="current-password"
+                    value={loginForm.password}
+                    onChange={(event) => setLoginForm((current) => ({
+                      ...current,
+                      password: event.target.value,
+                    }))}
+                  />
+                </label>
+
+                <div className="admin-form__actions">
+                  <p className="admin-status">
+                    Once you&apos;re in, you can update the show card and create additional editor logins for your team.
+                  </p>
+                  <button type="submit" className="button button--primary" disabled={loginPending}>
+                    {loginPending ? "Signing In..." : "Sign In"}
+                  </button>
+                </div>
+              </form>
+            </section>
+          )}
+        </section>
+      </div>
     </div>
   );
 }
 
 export default App;
-
