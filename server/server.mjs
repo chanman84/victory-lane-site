@@ -6,21 +6,33 @@ import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const dataDirectory = path.join(__dirname, "data");
+const dataDirectory = process.env.VLC_DATA_DIR || path.join(__dirname, "data");
 const usersFile = path.join(dataDirectory, "users.json");
 const showSettingsFile = path.join(dataDirectory, "show-settings.json");
 
 const port = Number(process.env.PORT || 3001);
-const cookieName = "vlc_admin_session";
-const sessionTtlMs = 1000 * 60 * 60 * 12;
-const sessionSecret = process.env.VLC_SESSION_SECRET || "victory-lane-cards-local-session-secret";
+const authTtlMs = 1000 * 60 * 60 * 12;
+const authSecret = process.env.VLC_AUTH_SECRET || "victory-lane-cards-local-auth-secret";
 const whatnotProfileUrl = "https://www.whatnot.com/user/chanman84";
+const configuredOrigins = [
+  process.env.FRONTEND_ORIGIN,
+  process.env.ADDITIONAL_FRONTEND_ORIGINS,
+]
+  .filter(Boolean)
+  .flatMap((value) => value.split(","))
+  .map((value) => value.trim())
+  .filter(Boolean);
+const allowedOrigins = new Set([
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  ...configuredOrigins,
+]);
 
 const defaultShowSettings = {
   label: "Next Show",
   headline: "Live Today at 2:30 PM ET",
   messages: [
-    "Huge thank you to everyone who joined us last night — the support from this community means everything.",
+    "Huge thank you to everyone who joined us last night - the support from this community means everything.",
     "We're back live again today at 2:30 PM and looking forward to seeing you all there.",
     "Let's keep building this together.",
   ],
@@ -28,8 +40,6 @@ const defaultShowSettings = {
   buttonHref: whatnotProfileUrl,
   updatedAt: new Date().toISOString(),
 };
-
-const activeSessions = new Map();
 
 function hashPassword(password, salt = crypto.randomBytes(16).toString("hex")) {
   const hash = crypto.pbkdf2Sync(password, salt, 120000, 64, "sha512").toString("hex");
@@ -58,53 +68,83 @@ function sanitizeUser(user) {
   };
 }
 
-function buildSessionCookie(sessionId, maxAgeSeconds) {
-  const signature = crypto.createHmac("sha256", sessionSecret).update(sessionId).digest("hex");
-  return `${cookieName}=${sessionId}.${signature}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${maxAgeSeconds}`;
+function signValue(value) {
+  return crypto.createHmac("sha256", authSecret).update(value).digest("base64url");
 }
 
-function clearSessionCookie() {
-  return `${cookieName}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0`;
+function issueAuthToken(user) {
+  const payload = {
+    sub: user.id,
+    exp: Date.now() + authTtlMs,
+  };
+  const encodedPayload = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  return `${encodedPayload}.${signValue(encodedPayload)}`;
 }
 
-function verifySignedSessionToken(rawToken) {
-  if (!rawToken || !rawToken.includes(".")) {
+function verifyAuthToken(token) {
+  if (!token || !token.includes(".")) {
     return null;
   }
 
-  const [sessionId, signature] = rawToken.split(".");
-  const expectedSignature = crypto.createHmac("sha256", sessionSecret).update(sessionId).digest("hex");
-
-  if (!signature) {
+  const [encodedPayload, signature] = token.split(".");
+  if (!encodedPayload || !signature) {
     return null;
   }
 
-  const providedBuffer = Buffer.from(signature, "hex");
-  const expectedBuffer = Buffer.from(expectedSignature, "hex");
+  const expectedSignature = signValue(encodedPayload);
+  const providedBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expectedSignature);
 
   if (providedBuffer.length !== expectedBuffer.length) {
     return null;
   }
 
-  return crypto.timingSafeEqual(providedBuffer, expectedBuffer) ? sessionId : null;
+  if (!crypto.timingSafeEqual(providedBuffer, expectedBuffer)) {
+    return null;
+  }
+
+  try {
+    const payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8"));
+    if (!payload?.sub || !payload?.exp || payload.exp < Date.now()) {
+      return null;
+    }
+
+    return payload;
+  } catch {
+    return null;
+  }
 }
 
-function parseCookies(cookieHeader = "") {
-  return cookieHeader
-    .split(";")
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .reduce((cookies, part) => {
-      const separatorIndex = part.indexOf("=");
-      if (separatorIndex === -1) {
-        return cookies;
-      }
+function getRequestToken(request) {
+  const authorization = request.headers.authorization || "";
+  if (!authorization.startsWith("Bearer ")) {
+    return "";
+  }
 
-      const key = part.slice(0, separatorIndex);
-      const value = part.slice(separatorIndex + 1);
-      cookies[key] = decodeURIComponent(value);
-      return cookies;
-    }, {});
+  return authorization.slice("Bearer ".length).trim();
+}
+
+function isAllowedOrigin(origin) {
+  if (!origin) {
+    return true;
+  }
+
+  return allowedOrigins.has(origin);
+}
+
+function buildCorsHeaders(request) {
+  const origin = request.headers.origin;
+
+  if (!origin || !isAllowedOrigin(origin)) {
+    return {};
+  }
+
+  return {
+    "Access-Control-Allow-Origin": origin,
+    "Access-Control-Allow-Methods": "GET,POST,PUT,OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    Vary: "Origin",
+  };
 }
 
 async function ensureDataStore() {
@@ -164,13 +204,22 @@ async function writeJson(filePath, value) {
   await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
-function sendJson(response, statusCode, payload, extraHeaders = {}) {
+function sendJson(request, response, statusCode, payload, extraHeaders = {}) {
   response.writeHead(statusCode, {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store",
+    ...buildCorsHeaders(request),
     ...extraHeaders,
   });
   response.end(JSON.stringify(payload));
+}
+
+function sendEmpty(request, response, statusCode, extraHeaders = {}) {
+  response.writeHead(statusCode, {
+    ...buildCorsHeaders(request),
+    ...extraHeaders,
+  });
+  response.end();
 }
 
 async function readRequestBody(request) {
@@ -246,84 +295,56 @@ function validateNewPassword(password) {
 }
 
 async function getCurrentUser(request) {
-  const cookies = parseCookies(request.headers.cookie);
-  const sessionToken = cookies[cookieName];
-  const sessionId = verifySignedSessionToken(sessionToken);
-
-  if (!sessionId) {
-    return null;
-  }
-
-  const session = activeSessions.get(sessionId);
-  if (!session) {
-    return null;
-  }
-
-  if (session.expiresAt < Date.now()) {
-    activeSessions.delete(sessionId);
+  const tokenPayload = verifyAuthToken(getRequestToken(request));
+  if (!tokenPayload) {
     return null;
   }
 
   const users = await getSavedUsers();
-  const matchingUser = users.find((user) => user.id === session.userId);
-  if (!matchingUser) {
-    activeSessions.delete(sessionId);
-    return null;
-  }
-
-  session.expiresAt = Date.now() + sessionTtlMs;
-  activeSessions.set(sessionId, session);
-
-  return sanitizeUser(matchingUser);
+  const matchingUser = users.find((user) => user.id === tokenPayload.sub);
+  return matchingUser ? sanitizeUser(matchingUser) : null;
 }
 
-function requireAuthentication(response, currentUser) {
+function requireAuthentication(request, response, currentUser) {
   if (!currentUser) {
-    sendJson(
-      response,
-      401,
-      { error: "Please sign in before using the admin tools." },
-      { "Set-Cookie": clearSessionCookie() },
-    );
+    sendJson(request, response, 401, { error: "Please sign in before using the admin tools." });
     return false;
   }
 
   return true;
 }
 
-function requireAdminRole(response, currentUser) {
+function requireAdminRole(request, response, currentUser) {
   if (currentUser?.role !== "admin") {
-    sendJson(response, 403, { error: "Admin access is required for that action." });
+    sendJson(request, response, 403, { error: "Admin access is required for that action." });
     return false;
   }
 
   return true;
-}
-
-function cleanupExpiredSessions() {
-  const now = Date.now();
-
-  for (const [sessionId, session] of activeSessions.entries()) {
-    if (session.expiresAt < now) {
-      activeSessions.delete(sessionId);
-    }
-  }
 }
 
 const server = http.createServer(async (request, response) => {
-  cleanupExpiredSessions();
-
   const url = new URL(request.url, `http://${request.headers.host}`);
 
   try {
+    if (!isAllowedOrigin(request.headers.origin)) {
+      sendJson(request, response, 403, { error: "That origin is not allowed to use this API." });
+      return;
+    }
+
+    if (request.method === "OPTIONS") {
+      sendEmpty(request, response, 204);
+      return;
+    }
+
     if (request.method === "GET" && url.pathname === "/api/health") {
-      sendJson(response, 200, { ok: true });
+      sendJson(request, response, 200, { ok: true });
       return;
     }
 
     if (request.method === "GET" && url.pathname === "/api/show-settings") {
       const showSettings = await readJson(showSettingsFile, defaultShowSettings);
-      sendJson(response, 200, { showSettings });
+      sendJson(request, response, 200, { showSettings });
       return;
     }
 
@@ -331,16 +352,11 @@ const server = http.createServer(async (request, response) => {
       const currentUser = await getCurrentUser(request);
 
       if (!currentUser) {
-        sendJson(
-          response,
-          401,
-          { error: "No active admin session." },
-          { "Set-Cookie": clearSessionCookie() },
-        );
+        sendJson(request, response, 401, { error: "No active admin session." });
         return;
       }
 
-      sendJson(response, 200, { user: currentUser });
+      sendJson(request, response, 200, { user: currentUser });
       return;
     }
 
@@ -350,7 +366,7 @@ const server = http.createServer(async (request, response) => {
       const password = `${payload.password ?? ""}`;
 
       if (!username || !password) {
-        sendJson(response, 400, { error: "Username and password are both required." });
+        sendJson(request, response, 400, { error: "Username and password are both required." });
         return;
       }
 
@@ -361,39 +377,25 @@ const server = http.createServer(async (request, response) => {
         !matchingUser ||
         !verifyPassword(password, matchingUser.passwordSalt, matchingUser.passwordHash)
       ) {
-        sendJson(response, 401, { error: "Those login details didn't match a saved user." });
+        sendJson(request, response, 401, { error: "Those login details did not match a saved user." });
         return;
       }
 
-      const sessionId = crypto.randomUUID();
-      activeSessions.set(sessionId, {
-        userId: matchingUser.id,
-        expiresAt: Date.now() + sessionTtlMs,
+      sendJson(request, response, 200, {
+        token: issueAuthToken(matchingUser),
+        user: sanitizeUser(matchingUser),
       });
-
-      sendJson(
-        response,
-        200,
-        { user: sanitizeUser(matchingUser) },
-        { "Set-Cookie": buildSessionCookie(sessionId, Math.floor(sessionTtlMs / 1000)) },
-      );
       return;
     }
 
     if (request.method === "POST" && url.pathname === "/api/auth/logout") {
-      const cookies = parseCookies(request.headers.cookie);
-      const sessionId = verifySignedSessionToken(cookies[cookieName]);
-      if (sessionId) {
-        activeSessions.delete(sessionId);
-      }
-
-      sendJson(response, 200, { ok: true }, { "Set-Cookie": clearSessionCookie() });
+      sendJson(request, response, 200, { ok: true });
       return;
     }
 
     if (request.method === "PUT" && url.pathname === "/api/auth/password") {
       const currentUser = await getCurrentUser(request);
-      if (!requireAuthentication(response, currentUser)) {
+      if (!requireAuthentication(request, response, currentUser)) {
         return;
       }
 
@@ -402,13 +404,13 @@ const server = http.createServer(async (request, response) => {
       const newPassword = `${payload.newPassword ?? ""}`;
 
       if (!currentPassword) {
-        sendJson(response, 400, { error: "Your current password is required." });
+        sendJson(request, response, 400, { error: "Your current password is required." });
         return;
       }
 
       const passwordError = validateNewPassword(newPassword);
       if (passwordError) {
-        sendJson(response, 400, { error: passwordError });
+        sendJson(request, response, 400, { error: passwordError });
         return;
       }
 
@@ -416,13 +418,13 @@ const server = http.createServer(async (request, response) => {
       const targetUserIndex = users.findIndex((user) => user.id === currentUser.id);
 
       if (targetUserIndex === -1) {
-        sendJson(response, 404, { error: "That user record could not be found." });
+        sendJson(request, response, 404, { error: "That user record could not be found." });
         return;
       }
 
       const targetUser = users[targetUserIndex];
       if (!verifyPassword(currentPassword, targetUser.passwordSalt, targetUser.passwordHash)) {
-        sendJson(response, 401, { error: "Your current password didn't match." });
+        sendJson(request, response, 401, { error: "Your current password did not match." });
         return;
       }
 
@@ -434,31 +436,34 @@ const server = http.createServer(async (request, response) => {
       };
 
       await saveUsers(users);
-      sendJson(response, 200, { ok: true, message: "Your password has been updated." });
+      sendJson(request, response, 200, { ok: true, message: "Your password has been updated." });
       return;
     }
 
     if (request.method === "PUT" && url.pathname === "/api/show-settings") {
       const currentUser = await getCurrentUser(request);
-      if (!requireAuthentication(response, currentUser)) {
+      if (!requireAuthentication(request, response, currentUser)) {
         return;
       }
 
       const payload = await readRequestBody(request);
       const showSettings = normalizeShowSettings(payload);
       await writeJson(showSettingsFile, showSettings);
-      sendJson(response, 200, { showSettings });
+      sendJson(request, response, 200, { showSettings });
       return;
     }
 
     if (request.method === "GET" && url.pathname === "/api/users") {
       const currentUser = await getCurrentUser(request);
-      if (!requireAuthentication(response, currentUser) || !requireAdminRole(response, currentUser)) {
+      if (
+        !requireAuthentication(request, response, currentUser) ||
+        !requireAdminRole(request, response, currentUser)
+      ) {
         return;
       }
 
       const users = await getSavedUsers();
-      sendJson(response, 200, {
+      sendJson(request, response, 200, {
         users: users.map((user) => sanitizeUser(user)),
       });
       return;
@@ -466,7 +471,10 @@ const server = http.createServer(async (request, response) => {
 
     if (request.method === "PUT" && /^\/api\/users\/[^/]+\/password$/.test(url.pathname)) {
       const currentUser = await getCurrentUser(request);
-      if (!requireAuthentication(response, currentUser) || !requireAdminRole(response, currentUser)) {
+      if (
+        !requireAuthentication(request, response, currentUser) ||
+        !requireAdminRole(request, response, currentUser)
+      ) {
         return;
       }
 
@@ -476,7 +484,7 @@ const server = http.createServer(async (request, response) => {
 
       const passwordError = validateNewPassword(newPassword);
       if (passwordError) {
-        sendJson(response, 400, { error: passwordError });
+        sendJson(request, response, 400, { error: passwordError });
         return;
       }
 
@@ -484,7 +492,7 @@ const server = http.createServer(async (request, response) => {
       const targetUserIndex = users.findIndex((user) => user.id === userId);
 
       if (targetUserIndex === -1) {
-        sendJson(response, 404, { error: "That user could not be found." });
+        sendJson(request, response, 404, { error: "That user could not be found." });
         return;
       }
 
@@ -497,7 +505,7 @@ const server = http.createServer(async (request, response) => {
       };
 
       await saveUsers(users);
-      sendJson(response, 200, {
+      sendJson(request, response, 200, {
         ok: true,
         message: `Password updated for ${targetUser.displayName}.`,
       });
@@ -506,7 +514,10 @@ const server = http.createServer(async (request, response) => {
 
     if (request.method === "POST" && url.pathname === "/api/users") {
       const currentUser = await getCurrentUser(request);
-      if (!requireAuthentication(response, currentUser) || !requireAdminRole(response, currentUser)) {
+      if (
+        !requireAuthentication(request, response, currentUser) ||
+        !requireAdminRole(request, response, currentUser)
+      ) {
         return;
       }
 
@@ -517,7 +528,7 @@ const server = http.createServer(async (request, response) => {
       const role = payload.role === "admin" ? "admin" : "editor";
 
       if (!/^[a-z0-9_-]{3,24}$/i.test(username)) {
-        sendJson(response, 400, {
+        sendJson(request, response, 400, {
           error: "Username must be 3-24 characters using letters, numbers, dashes, or underscores.",
         });
         return;
@@ -525,13 +536,13 @@ const server = http.createServer(async (request, response) => {
 
       const passwordError = validateNewPassword(password);
       if (passwordError) {
-        sendJson(response, 400, { error: passwordError });
+        sendJson(request, response, 400, { error: passwordError });
         return;
       }
 
       const users = await getSavedUsers();
       if (users.some((user) => user.username === username)) {
-        sendJson(response, 409, { error: "That username already exists." });
+        sendJson(request, response, 409, { error: "That username already exists." });
         return;
       }
 
@@ -549,13 +560,13 @@ const server = http.createServer(async (request, response) => {
       users.push(newUser);
       await saveUsers(users);
 
-      sendJson(response, 201, { user: sanitizeUser(newUser) });
+      sendJson(request, response, 201, { user: sanitizeUser(newUser) });
       return;
     }
 
-    sendJson(response, 404, { error: "That API route wasn't found." });
+    sendJson(request, response, 404, { error: "That API route was not found." });
   } catch (error) {
-    sendJson(response, 500, {
+    sendJson(request, response, 500, {
       error: error instanceof Error ? error.message : "Unexpected server error.",
     });
   }
@@ -564,5 +575,8 @@ const server = http.createServer(async (request, response) => {
 await ensureDataStore();
 
 server.listen(port, () => {
-  console.log(`[Victory Lane Cards] Admin server listening on http://localhost:${port}`);
+  console.log(`[Victory Lane Cards] Admin API listening on http://localhost:${port}`);
+  if (configuredOrigins.length > 0) {
+    console.log(`[Victory Lane Cards] Allowed frontend origins: ${configuredOrigins.join(", ")}`);
+  }
 });

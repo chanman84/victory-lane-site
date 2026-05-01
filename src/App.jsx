@@ -24,12 +24,14 @@ const facebookPageUrl = "https://www.facebook.com/profile.php?id=61587744621760"
 const instagramUrl = "https://www.instagram.com/victorylane_cards/?hl=en";
 const buyerReferralUrl = "https://whatnot.com/invite/chanman84";
 const sellerReferralUrl = "https://whatnot.com/invite/seller/chanman84";
+const apiBaseUrl = `${import.meta.env.VITE_API_BASE_URL ?? ""}`.trim().replace(/\/$/, "");
+const adminTokenStorageKey = "vlc_admin_token";
 
 const defaultShowSettings = {
   label: "Next Show",
   headline: "Live Today at 2:30 PM ET",
   messages: [
-    "Huge thank you to everyone who joined us last night — the support from this community means everything.",
+    "Huge thank you to everyone who joined us last night - the support from this community means everything.",
     "We're back live again today at 2:30 PM and looking forward to seeing you all there.",
     "Let's keep building this together.",
   ],
@@ -73,7 +75,7 @@ const categories = [
     title: "Baseball",
     theme: "baseball",
     description:
-      "The backbone of the hobby. Bowman, flagship, chrome, rookies, autos, and key singles — built for collectors who understand the market and move with it.",
+      "The backbone of the hobby. Bowman, flagship, chrome, rookies, autos, and key singles - built for collectors who understand the market and move with it.",
   },
   {
     title: "Football",
@@ -91,41 +93,41 @@ const categories = [
     title: "Vintage",
     theme: "vintage",
     description:
-      "History that still competes. Classic cardboard with proven appeal — built for collectors who value legacy, condition, and long-term relevance.",
+      "History that still competes. Classic cardboard with proven appeal - built for collectors who value legacy, condition, and long-term relevance.",
   },
 ];
 
 const reasons = [
   {
-    title: "🏁 Fair, consistent pricing.",
-    body: "Respect for both the card and the collector — every time.",
+    title: "Fair, consistent pricing.",
+    body: "Respect for both the card and the collector - every time.",
   },
   {
-    title: "🏁 Transparent, clean live shows.",
-    body: "No confusion, no gimmicks — just straightforward selling.",
+    title: "Transparent, clean live shows.",
+    body: "No confusion, no gimmicks - just straightforward selling.",
   },
   {
-    title: "🏁 Built for collectors first.",
+    title: "Built for collectors first.",
     body: "Driven by hobby trust, not corporate polish.",
   },
   {
-    title: "🏁 Energy that’s part of the brand.",
-    body: "Not forced — built into every show from the start.",
+    title: "Energy that's part of the brand.",
+    body: "Not forced - built into every show from the start.",
   },
   {
-    title: "🏁 Saturday is the destination.",
-    body: "A weekly show collectors can count on — and come back for.",
+    title: "Saturday is the destination.",
+    body: "A weekly show collectors can count on - and come back for.",
   },
   {
-    title: "🏁 Multi-platform, one community.",
+    title: "Multi-platform, one community.",
     body: "Live selling on Whatnot, supported by Facebook, Instagram, and a growing web presence.",
   },
   {
-    title: "🏁 Consistent execution, every show.",
+    title: "Consistent execution, every show.",
     body: "A structured approach that keeps things smooth, predictable, and professional week after week.",
   },
   {
-    title: "🏁 Built for long-term collectors.",
+    title: "Built for long-term collectors.",
     body: "Focused on relationships, not one-time transactions.",
   },
 ];
@@ -164,6 +166,41 @@ function buildShowPayload(form) {
       .filter(Boolean),
     buttonLabel: form.buttonLabel.trim(),
     buttonHref: form.buttonHref.trim(),
+  };
+}
+
+function buildApiUrl(pathname) {
+  return apiBaseUrl ? `${apiBaseUrl}${pathname}` : pathname;
+}
+
+function readStoredToken() {
+  if (typeof window === "undefined") {
+    return "";
+  }
+
+  return window.localStorage.getItem(adminTokenStorageKey) || "";
+}
+
+function writeStoredToken(token) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  if (token) {
+    window.localStorage.setItem(adminTokenStorageKey, token);
+  } else {
+    window.localStorage.removeItem(adminTokenStorageKey);
+  }
+}
+
+function buildAuthHeaders(token, headers = {}) {
+  if (!token) {
+    return headers;
+  }
+
+  return {
+    ...headers,
+    Authorization: `Bearer ${token}`,
   };
 }
 
@@ -214,6 +251,7 @@ function App() {
   const [showApiOnline, setShowApiOnline] = useState(true);
   const [adminOpen, setAdminOpen] = useState(false);
   const [sessionLoading, setSessionLoading] = useState(true);
+  const [authToken, setAuthToken] = useState(() => readStoredToken());
   const [currentUser, setCurrentUser] = useState(null);
   const [authError, setAuthError] = useState("");
   const [loginPending, setLoginPending] = useState(false);
@@ -243,12 +281,29 @@ function App() {
 
   useEffect(() => {
     void loadShowSettings();
-    void loadSession();
+
+    if (authToken) {
+      void loadSession(authToken);
+    } else {
+      setSessionLoading(false);
+    }
   }, []);
+
+  function persistAuthToken(nextToken) {
+    setAuthToken(nextToken);
+    writeStoredToken(nextToken);
+  }
+
+  function clearAuthSession(message = "") {
+    persistAuthToken("");
+    setCurrentUser(null);
+    setUserList([]);
+    setAuthError(message);
+  }
 
   async function loadShowSettings() {
     try {
-      const response = await fetch("/api/show-settings");
+      const response = await fetch(buildApiUrl("/api/show-settings"));
       const data = await readJson(response);
       setShowApiOnline(true);
 
@@ -266,20 +321,23 @@ function App() {
     }
   }
 
-  async function loadSession() {
+  async function loadSession(tokenToUse = authToken) {
+    if (!tokenToUse) {
+      setSessionLoading(false);
+      return;
+    }
+
     try {
-      const response = await fetch("/api/auth/session", {
-        credentials: "include",
+      const response = await fetch(buildApiUrl("/api/auth/session"), {
+        headers: buildAuthHeaders(tokenToUse),
       });
+      const data = await readJson(response);
       setShowApiOnline(true);
 
       if (response.status === 401) {
-        setCurrentUser(null);
-        setAuthError("");
+        clearAuthSession("");
         return;
       }
-
-      const data = await readJson(response);
 
       if (!response.ok) {
         throw new Error(data?.error || "Unable to check admin session.");
@@ -289,11 +347,10 @@ function App() {
       setAuthError("");
 
       if (data.user?.role === "admin") {
-        await loadUsers();
+        await loadUsers(tokenToUse);
       }
     } catch (error) {
-      setCurrentUser(null);
-      setAuthError("The admin server is offline right now. Start `npm run server` to use the admin tools.");
+      clearAuthSession("The admin API is offline right now. Once the Render service is live, the admin tools will connect automatically.");
       if (error instanceof TypeError) {
         setShowApiOnline(false);
       }
@@ -302,15 +359,24 @@ function App() {
     }
   }
 
-  async function loadUsers() {
+  async function loadUsers(tokenToUse = authToken) {
+    if (!tokenToUse) {
+      return;
+    }
+
     setUsersLoading(true);
 
     try {
-      const response = await fetch("/api/users", {
-        credentials: "include",
+      const response = await fetch(buildApiUrl("/api/users"), {
+        headers: buildAuthHeaders(tokenToUse),
       });
       const data = await readJson(response);
       setShowApiOnline(true);
+
+      if (response.status === 401) {
+        clearAuthSession("Your admin session expired. Please sign in again.");
+        return;
+      }
 
       if (!response.ok) {
         throw new Error(data?.error || "Unable to load users.");
@@ -355,9 +421,8 @@ function App() {
     setAuthError("");
 
     try {
-      const response = await fetch("/api/auth/login", {
+      const response = await fetch(buildApiUrl("/api/auth/login"), {
         method: "POST",
-        credentials: "include",
         headers: {
           "Content-Type": "application/json",
         },
@@ -370,12 +435,14 @@ function App() {
         throw new Error(data?.error || "Unable to sign in.");
       }
 
+      persistAuthToken(data.token || "");
       setCurrentUser(data.user);
       setLoginForm({ username: "", password: "" });
-      setShowApiOnline(true);
 
       if (data.user?.role === "admin") {
-        await loadUsers();
+        await loadUsers(data.token);
+      } else {
+        setUserList([]);
       }
     } catch (error) {
       setAuthError(error.message || "We couldn't sign you in.");
@@ -388,26 +455,17 @@ function App() {
     }
   }
 
-  async function handleLogout() {
-    try {
-      await fetch("/api/auth/logout", {
-        method: "POST",
-        credentials: "include",
-      });
-    } finally {
-      setCurrentUser(null);
-      setUserList([]);
-      setAuthError("");
-      setUserFormState({ type: "idle", message: "" });
-      setPasswordState({ type: "idle", message: "" });
-      setPasswordForm({
-        currentPassword: "",
-        newPassword: "",
-        confirmPassword: "",
-      });
-      setResetPasswordForms({});
-      setResetPasswordStates({});
-    }
+  function handleLogout() {
+    clearAuthSession("");
+    setUserFormState({ type: "idle", message: "" });
+    setPasswordState({ type: "idle", message: "" });
+    setPasswordForm({
+      currentPassword: "",
+      newPassword: "",
+      confirmPassword: "",
+    });
+    setResetPasswordForms({});
+    setResetPasswordStates({});
   }
 
   async function handleShowSave(event) {
@@ -434,16 +492,24 @@ function App() {
     setShowSaveState({ type: "idle", message: "" });
 
     try {
-      const response = await fetch("/api/show-settings", {
+      const response = await fetch(buildApiUrl("/api/show-settings"), {
         method: "PUT",
-        credentials: "include",
-        headers: {
+        headers: buildAuthHeaders(authToken, {
           "Content-Type": "application/json",
-        },
+        }),
         body: JSON.stringify(payload),
       });
       const data = await readJson(response);
       setShowApiOnline(true);
+
+      if (response.status === 401) {
+        clearAuthSession("Your admin session expired. Please sign in again.");
+        setShowSaveState({
+          type: "error",
+          message: "Your session expired before the update could be saved.",
+        });
+        return;
+      }
 
       if (!response.ok) {
         throw new Error(data?.error || "Unable to save show settings.");
@@ -452,7 +518,6 @@ function App() {
       const normalizedSettings = normalizeShowSettings(data?.showSettings);
       setShowSettings(normalizedSettings);
       setShowForm(buildShowForm(normalizedSettings));
-      setShowApiOnline(true);
       setShowSaveState({
         type: "success",
         message: "The homepage show notification is live.",
@@ -476,16 +541,24 @@ function App() {
     setUserFormState({ type: "idle", message: "" });
 
     try {
-      const response = await fetch("/api/users", {
+      const response = await fetch(buildApiUrl("/api/users"), {
         method: "POST",
-        credentials: "include",
-        headers: {
+        headers: buildAuthHeaders(authToken, {
           "Content-Type": "application/json",
-        },
+        }),
         body: JSON.stringify(userForm),
       });
       const data = await readJson(response);
       setShowApiOnline(true);
+
+      if (response.status === 401) {
+        clearAuthSession("Your admin session expired. Please sign in again.");
+        setUserFormState({
+          type: "error",
+          message: "Your session expired before that user could be created.",
+        });
+        return;
+      }
 
       if (!response.ok) {
         throw new Error(data?.error || "Unable to create that user.");
@@ -501,7 +574,6 @@ function App() {
         type: "success",
         message: "New admin access has been created.",
       });
-      setShowApiOnline(true);
       await loadUsers();
     } catch (error) {
       setUserFormState({
@@ -539,12 +611,11 @@ function App() {
     setPasswordState({ type: "idle", message: "" });
 
     try {
-      const response = await fetch("/api/auth/password", {
+      const response = await fetch(buildApiUrl("/api/auth/password"), {
         method: "PUT",
-        credentials: "include",
-        headers: {
+        headers: buildAuthHeaders(authToken, {
           "Content-Type": "application/json",
-        },
+        }),
         body: JSON.stringify({
           currentPassword: passwordForm.currentPassword,
           newPassword: passwordForm.newPassword,
@@ -552,6 +623,15 @@ function App() {
       });
       const data = await readJson(response);
       setShowApiOnline(true);
+
+      if (response.status === 401) {
+        clearAuthSession("Your admin session expired. Please sign in again.");
+        setPasswordState({
+          type: "error",
+          message: "Your session expired before the password change completed.",
+        });
+        return;
+      }
 
       if (!response.ok) {
         throw new Error(data?.error || "Unable to update your password.");
@@ -597,22 +677,36 @@ function App() {
     setResettingUserId(userId);
     setResetPasswordStates((current) => ({
       ...current,
-      [userId]: { type: "idle", message: "" },
+      [userId]: {
+        type: "idle",
+        message: "",
+      },
     }));
 
     try {
-      const response = await fetch(`/api/users/${userId}/password`, {
+      const response = await fetch(buildApiUrl(`/api/users/${userId}/password`), {
         method: "PUT",
-        credentials: "include",
-        headers: {
+        headers: buildAuthHeaders(authToken, {
           "Content-Type": "application/json",
-        },
+        }),
         body: JSON.stringify({
           newPassword: nextPassword,
         }),
       });
       const data = await readJson(response);
       setShowApiOnline(true);
+
+      if (response.status === 401) {
+        clearAuthSession("Your admin session expired. Please sign in again.");
+        setResetPasswordStates((current) => ({
+          ...current,
+          [userId]: {
+            type: "error",
+            message: "Your session expired before that password update completed.",
+          },
+        }));
+        return;
+      }
 
       if (!response.ok) {
         throw new Error(data?.error || "Unable to update that user's password.");
@@ -727,7 +821,7 @@ function App() {
               <h2>Saturday is the headline slot.</h2>
               <p>
                 Saturday is where everything comes together. Each week, we bring the energy of the hobby to a live,
-                structured show built for collectors — combining transparency, fast-moving singles, and a community
+                structured show built for collectors - combining transparency, fast-moving singles, and a community
                 that knows how to compete.
               </p>
             </div>
@@ -737,7 +831,7 @@ function App() {
                 <span className="show-badge">Live Every Saturday</span>
                 <h3>Victory Lane Saturday Singles Show</h3>
                 <p>
-                  From Racing and baseball to football, hockey, vintage, and select Pokemon — every show is built for
+                  From Racing and baseball to football, hockey, vintage, and select Pokemon - every show is built for
                   momentum. Expect clean singles, real-time action, and a community-driven experience that keeps things
                   moving.
                 </p>
@@ -762,7 +856,7 @@ function App() {
             <div className="section-heading">
               <p className="eyebrow">Action Center</p>
               <h2>Referral links and show traffic, all in one place.</h2>
-              <p>Everything you need to join, buy, or start selling — right here.</p>
+              <p>Everything you need to join, buy, or start selling - right here.</p>
             </div>
 
             <div className="referral-grid">
@@ -788,7 +882,7 @@ function App() {
               <p className="eyebrow">Categories</p>
               <h2>Built around what your audience actually collects.</h2>
               <p>
-                IndyCar at the core, backed by baseball, football, hockey, and vintage — a mix built for collectors
+                IndyCar at the core, backed by baseball, football, hockey, and vintage - a mix built for collectors
                 who want something different.
               </p>
             </div>
@@ -839,7 +933,7 @@ function App() {
                   <h2>About Victory Lane Cards</h2>
                   <p className="profile-card__tagline">Where Collecting Meets Competition</p>
                   <p>
-                    Victory Lane Cards started as more than just a business — it was built around family, time, and
+                    Victory Lane Cards started as more than just a business - it was built around family, time, and
                     purpose.
                   </p>
                   <p>
@@ -850,7 +944,7 @@ function App() {
                   <p>
                     The inspiration behind it came during a difficult time. As my father battled cancer for the fifth
                     time, I made it a priority to spend as much time with him as possible. One of our traditions has
-                    always been attending the St. Pete Grand Prix together — a reminder of how meaningful shared
+                    always been attending the St. Pete Grand Prix together - a reminder of how meaningful shared
                     experiences can be.
                   </p>
                   <p>
@@ -858,12 +952,12 @@ function App() {
                     sooner.
                   </p>
                   <p>
-                    Victory Lane Cards is my way of ensuring my children don&apos;t have that same regret. It&apos;s about
-                    creating something that evolves with them — from childhood into adulthood — where we&apos;re not just
+                    Victory Lane Cards is my way of ensuring my children don't have that same regret. It's about
+                    creating something that evolves with them - from childhood into adulthood - where we're not just
                     family, but teammates working toward a shared goal.
                   </p>
                   <p className="profile-card__trust">
-                    At its core, this isn&apos;t just about cards. It&apos;s about building relationships, creating memories,
+                    At its core, this isn't just about cards. It's about building relationships, creating memories,
                     and competing together every step of the way.
                   </p>
                 </div>
@@ -880,7 +974,7 @@ function App() {
                 </div>
                 <div className="info-chip">
                   <span className="info-chip__label">Weekly Rhythm</span>
-                  <strong>Saturday is race day — live Whatnot shows every week</strong>
+                  <strong>Saturday is race day - live Whatnot shows every week</strong>
                 </div>
               </div>
             </div>
@@ -971,12 +1065,13 @@ function App() {
 
           {!showApiOnline && (
             <div className="admin-alert admin-alert--warning">
-              The admin server is offline. Run <code>npm run server</code> in this project folder, then refresh.
+              The admin API is offline or unreachable. Once the Render service is live and VITE_API_BASE_URL is set,
+              the admin tools will connect here automatically.
             </div>
           )}
 
           {sessionLoading ? (
-            <p className="admin-empty">Checking your saved admin session…</p>
+            <p className="admin-empty">Checking your saved admin session...</p>
           ) : currentUser ? (
             <div className="admin-panel__grid">
               <section className="admin-card">
@@ -1083,7 +1178,7 @@ function App() {
 
                   <div className="admin-form__actions">
                     <p className={`admin-status ${showSaveState.type ? `admin-status--${showSaveState.type}` : ""}`}>
-                      {showSaveState.message || "Save here anytime you want to update the homepage show card."}
+                      {showSaveState.message || "Save here any time you want to update the homepage show card."}
                     </p>
                     <button type="submit" className="button button--primary" disabled={showSaving}>
                       {showSaving ? "Saving..." : "Save Show Update"}
@@ -1225,7 +1320,7 @@ function App() {
                   </form>
 
                   {usersLoading ? (
-                    <p className="admin-empty">Loading saved users…</p>
+                    <p className="admin-empty">Loading saved users...</p>
                   ) : (
                     <ul className="admin-user-list">
                       {userList.map((user) => (
@@ -1278,7 +1373,7 @@ function App() {
                 <div>
                   <h3>Login link, real backend, saved users</h3>
                   <p>
-                    This admin panel talks to the backend server and stores user accounts plus show notifications, so
+                    This admin panel talks to the backend API and stores user accounts plus show notifications, so
                     the homepage can update without touching the source code.
                   </p>
                 </div>
@@ -1315,7 +1410,7 @@ function App() {
 
                 <div className="admin-form__actions">
                   <p className="admin-status">
-                    Once you&apos;re in, you can update the show card and create additional editor logins for your team.
+                    Once you're in, you can update the show card and create additional editor logins for your team.
                   </p>
                   <button type="submit" className="button button--primary" disabled={loginPending}>
                     {loginPending ? "Signing In..." : "Sign In"}
